@@ -68,10 +68,8 @@ export default function SubjectDetails() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Link to="/subjects" className="text-sm text-slate-700 underline">Back</Link>
-        <h1 className="text-base font-semibold">{subject.name}</h1>
-        <div />
+      <div className="text-center">
+        <h1 className="text-base font-semibold text-slate-900">{subject.name}</h1>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -98,6 +96,12 @@ export default function SubjectDetails() {
               ))}
             </select>
           </div>
+          <Link
+            to="/subjects"
+            className="w-full rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 text-center hover:border-slate-400"
+          >
+            Back
+          </Link>
           <button type="submit" className="w-full rounded-xl bg-brand px-4 py-2 font-semibold text-white">Save</button>
           {saved && <p className="text-center text-sm text-emerald-600">Saved!</p>}
         </form>
