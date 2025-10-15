@@ -21,7 +21,7 @@ This guide covers deploying the backend on Render and the frontend on Vercel.
 
 4. **Deploy**
    - Click deploy. Render will install dependencies and start the service.
-   - Note the live URL (e.g., `https://self-attendance-api.onrender.com`).
+   - Note the live URL (e.g., `https://self-attendance-lymy.onrender.com`).
 
 5. **CORS configuration**
    - The backend already enables CORS for all origins. If you want to restrict it, update `backend/server.js`.
@@ -38,7 +38,7 @@ This guide covers deploying the backend on Render and the frontend on Vercel.
    - Output directory: `build`
 
 3. **Environment variables**
-   - Add `REACT_APP_API_BASE_URL` pointing to your Render backend URL, e.g., `https://self-attendance-api.onrender.com`.
+   - Add `REACT_APP_API_BASE_URL` pointing to your Render backend URL, e.g., `https://self-attendance-lymy.onrender.com`.
 
 4. **Deploy**
    - Trigger the deployment. Vercel will build the frontend and host it globally.
