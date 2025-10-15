@@ -1,0 +1,358 @@
+import React, { createContext, useEffect, useMemo, useState } from 'react';
+import { Routes, Route } from 'react-router-dom';
+import Navbar from './components/Navbar';
+import BottomNav from './components/BottomNav';
+import Home from './pages/Home';
+import Subjects from './pages/Subjects';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import SubjectDetails from './pages/SubjectDetails';
+import { apiFetch } from './lib/api';
+
+export const AppDataContext = createContext(null);
+
+function App() {
+  const [subjects, setSubjects] = useState(() => {
+    try {
+      const saved = localStorage.getItem('subjects');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [attendance, setAttendance] = useState(() => {
+    try {
+      const saved = localStorage.getItem('attendance');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Auth: token + user persisted in localStorage; hydrate on load
+  const [user, setUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [token, setToken] = useState(() => {
+    try {
+      return localStorage.getItem('token') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('subjects', JSON.stringify(subjects));
+  }, [subjects]);
+
+  useEffect(() => {
+    localStorage.setItem('attendance', JSON.stringify(attendance));
+  }, [attendance]);
+
+  useEffect(() => {
+    if (user) localStorage.setItem('user', JSON.stringify(user));
+    else localStorage.removeItem('user');
+  }, [user]);
+
+  useEffect(() => {
+    if (token) localStorage.setItem('token', token);
+    else localStorage.removeItem('token');
+  }, [token]);
+
+  // If we have a token but no user, fetch profile
+  useEffect(() => {
+    let cancelled = false;
+    const loadMe = async () => {
+      if (!token || user) return;
+      try {
+        const res = await apiFetch('/api/auth/me');
+        if (!cancelled) {
+          if (res.ok) {
+            const data = await res.json();
+            setUser({ id: data.id, name: data.name, email: data.email });
+          } else {
+            setToken('');
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+    loadMe();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, user]);
+
+  const addSubject = async (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    // If authenticated, create on server
+    if (token) {
+      const res = await apiFetch('/api/subjects', { method: 'POST', body: JSON.stringify({ name: trimmed }) });
+      if (!res.ok) {
+        // fall back silently if conflict
+        return;
+      }
+      const s = await res.json();
+      setSubjects((prev) => [...prev, s]);
+    } else {
+      const exists = subjects.some((s) => s.name.toLowerCase() === trimmed.toLowerCase());
+      if (exists) return;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setSubjects((prev) => [...prev, { id, name: trimmed }]);
+    }
+  };
+
+  // When token+user are set, fetch remote subjects/attendance
+  useEffect(() => {
+    if (token && user) {
+      loadRemote();
+    }
+  }, [token, user]);
+
+  const editSubject = async (id, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (token) {
+      const res = await apiFetch(`/api/subjects/${id}`, { method: 'PUT', body: JSON.stringify({ name: trimmed }) });
+      if (!res.ok) return;
+      const s = await res.json();
+      setSubjects((prev) => prev.map((x) => (x.id === id ? s : x)));
+    } else {
+      setSubjects((prev) => prev.map((s) => (s.id === id ? { ...s, name: trimmed } : s)));
+    }
+  };
+
+  const deleteSubject = async (id) => {
+    if (token) {
+      const res = await apiFetch(`/api/subjects/${id}`, { method: 'DELETE' });
+      if (!res.ok) return;
+    }
+    setSubjects((prev) => prev.filter((s) => s.id !== id));
+    setAttendance((prev) => {
+      const copy = { ...prev };
+      Object.keys(copy).forEach((date) => {
+        if (copy[date] && copy[date][id]) {
+          const { [id]: _, ...rest } = copy[date];
+          copy[date] = rest;
+          if (Object.keys(copy[date]).length === 0) {
+            delete copy[date];
+          }
+        }
+      });
+      return copy;
+    });
+  };
+
+  const markAttendance = async (dateStrOrArray, subjectIds, status) => {
+    if ((!dateStrOrArray && !Array.isArray(dateStrOrArray)) || subjectIds.length === 0 || !status) return;
+    const dates = Array.isArray(dateStrOrArray) ? dateStrOrArray : [dateStrOrArray];
+    if (token) {
+      await apiFetch('/api/attendance/mark', {
+        method: 'POST',
+        body: JSON.stringify({ dates, subjectIds, status }),
+      });
+    }
+    // Update local state
+    setAttendance((prev) => {
+      const copy = { ...prev };
+      dates.forEach((dateStr) => {
+        const day = copy[dateStr] ? { ...copy[dateStr] } : {};
+        subjectIds.forEach((id) => {
+          day[id] = status;
+        });
+        copy[dateStr] = day;
+      });
+      return copy;
+    });
+  };
+
+  const clearAttendance = async (dateStr, subjectId) => {
+    if (!dateStr || !subjectId) return;
+    if (token) {
+      await apiFetch(`/api/attendance/clear?date=${encodeURIComponent(dateStr)}&subjectId=${encodeURIComponent(subjectId)}`, {
+        method: 'DELETE',
+      });
+    }
+    setAttendance((prev) => {
+      const copy = { ...prev };
+      if (!copy[dateStr]) return prev;
+      const { [subjectId]: _, ...rest } = copy[dateStr];
+      if (Object.keys(rest).length === 0) {
+        delete copy[dateStr];
+      } else {
+        copy[dateStr] = rest;
+      }
+      return copy;
+    });
+  };
+
+  // Load subjects and attendance from server
+  const loadRemote = async () => {
+    if (!token) return;
+    try {
+      const [sRes, aRes] = await Promise.all([
+        apiFetch('/api/subjects'),
+        apiFetch('/api/attendance/all'),
+      ]);
+      if (sRes.ok) {
+        const s = await sRes.json();
+        setSubjects(s);
+      }
+      if (aRes.ok) {
+        const a = await aRes.json();
+        setAttendance(a);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const migrateLocalToServerIfNeeded = async () => {
+    if (!token) return;
+    try {
+      const sRes = await apiFetch('/api/subjects');
+      const aRes = await apiFetch('/api/attendance/all');
+      const serverSubjects = sRes.ok ? await sRes.json() : [];
+      const serverAttendance = aRes.ok ? await aRes.json() : {};
+      const hasServerData = serverSubjects.length > 0 || Object.keys(serverAttendance).length > 0;
+      if (hasServerData) return;
+      // Read local cached data
+      const localSubjects = (() => {
+        try { return JSON.parse(localStorage.getItem('subjects') || '[]'); } catch { return []; }
+      })();
+      const localAttendance = (() => {
+        try { return JSON.parse(localStorage.getItem('attendance') || '{}'); } catch { return {}; }
+      })();
+      if (localSubjects.length === 0) return;
+      // Create subjects on server and build id map
+      const idMap = new Map();
+      for (const s of localSubjects) {
+        const res = await apiFetch('/api/subjects', { method: 'POST', body: JSON.stringify({ name: s.name }) });
+        if (res.ok) {
+          const created = await res.json();
+          idMap.set(s.id, created.id);
+        }
+      }
+      // Push attendance grouped by status per date
+      for (const [dateStr, perSubj] of Object.entries(localAttendance)) {
+        const groups = {};
+        for (const [oldId, status] of Object.entries(perSubj)) {
+          const newId = idMap.get(oldId);
+          if (!newId) continue;
+          if (!groups[status]) groups[status] = [];
+          groups[status].push(newId);
+        }
+        for (const [status, subjIds] of Object.entries(groups)) {
+          if (subjIds.length === 0) continue;
+          await apiFetch('/api/attendance/mark', {
+            method: 'POST',
+            body: JSON.stringify({ dates: [dateStr], subjectIds: subjIds, status }),
+          });
+        }
+      }
+      // Reload from server
+      await loadRemote();
+    } catch {
+      // ignore
+    }
+  };
+
+  // Auth actions
+  const loginUser = async (email, password) => {
+    const res = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Login failed');
+    }
+    const data = await res.json();
+    setToken(data.token || '');
+    setUser(data.user || null);
+    await migrateLocalToServerIfNeeded();
+    await loadRemote();
+    return data.user;
+  };
+
+  const signupUser = async (name, email, password) => {
+    const res = await apiFetch('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({ name, email, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Signup failed');
+    }
+    const data = await res.json();
+    setToken(data.token || '');
+    setUser(data.user || null);
+    return data.user;
+  };
+
+  const logout = () => {
+    setToken('');
+    setUser(null);
+    // Clear client-side cached data so nothing is shown after logout
+    setSubjects([]);
+    setAttendance({});
+    try {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      localStorage.removeItem('subjects');
+      localStorage.removeItem('attendance');
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const ctxValue = useMemo(
+    () => ({
+      // data
+      subjects,
+      attendance,
+      user,
+      token,
+      // subject actions
+      addSubject,
+      editSubject,
+      deleteSubject,
+      // attendance actions
+      markAttendance,
+      // auth actions
+      loginUser,
+      signupUser,
+      clearAttendance,
+      logout,
+    }),
+    [subjects, attendance, user, token]
+  );
+
+  return (
+    <AppDataContext.Provider value={ctxValue}>
+      <div className="min-h-screen bg-slate-50 text-slate-900">
+        <Navbar />
+        <main className="mx-auto max-w-md w-full px-3 pb-28 pt-16">
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/subjects" element={<Subjects />} />
+            <Route path="/subjects/:id" element={<SubjectDetails />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<Signup />} />
+          </Routes>
+        </main>
+        <BottomNav />
+      </div>
+    </AppDataContext.Provider>
+  );
+}
+
+export default App;

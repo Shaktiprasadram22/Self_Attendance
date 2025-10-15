@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mobile-first tweaks */
+html, body, #root {
+  height: 100%;
+}
+body {
+  -webkit-tap-highlight-color: transparent;
+}
