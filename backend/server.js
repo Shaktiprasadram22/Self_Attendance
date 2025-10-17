@@ -30,7 +30,6 @@ app.use('/api/subjects', subjectRoutes);
 const todoRoutes = require('./routes/todoRoutes');
 app.use('/api/todos', todoRoutes);
 
-app.listen(PORT, 'localhost', () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
-
