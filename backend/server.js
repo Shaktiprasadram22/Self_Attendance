@@ -27,7 +27,10 @@ const authRoutes = require('./routes/authRoutes');
 app.use('/api/auth', authRoutes);
 const subjectRoutes = require('./routes/subjectRoutes');
 app.use('/api/subjects', subjectRoutes);
+const todoRoutes = require('./routes/todoRoutes');
+app.use('/api/todos', todoRoutes);
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on http://192.168.1.105:${PORT}`);
+app.listen(PORT, 'localhost', () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
 });
+

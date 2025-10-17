@@ -28,6 +28,7 @@ export default function Navbar() {
           <nav className="flex items-center gap-3">
             <NavItem to="/" label="Home" />
             <NavItem to="/subjects" label="Subjects" />
+            <NavItem to="/todos" label="Todos" />
           </nav>
           {user ? (
             <button

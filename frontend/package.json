@@ -17,7 +17,7 @@
     "test": "react-scripts test --watchAll=false",
     "eject": "react-scripts eject"
   },
-  "proxy": "http://172.21.234.79:5000",
+  "proxy": "http://localhost:5000",
   "browserslist": {
     "production": [
       ">0.2%",

@@ -7,6 +7,7 @@ import Subjects from './pages/Subjects';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import SubjectDetails from './pages/SubjectDetails';
+import Todos from './pages/Todos';
 import { apiFetch } from './lib/api';
 
 export const AppDataContext = createContext(null);
@@ -27,6 +28,15 @@ function App() {
       return saved ? JSON.parse(saved) : {};
     } catch {
       return {};
+    }
+  });
+
+  const [todos, setTodos] = useState(() => {
+    try {
+      const saved = localStorage.getItem('todos');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
     }
   });
 
@@ -54,6 +64,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('attendance', JSON.stringify(attendance));
   }, [attendance]);
+
+  useEffect(() => {
+    localStorage.setItem('todos', JSON.stringify(todos));
+  }, [todos]);
 
   useEffect(() => {
     if (user) localStorage.setItem('user', JSON.stringify(user));
@@ -151,6 +165,54 @@ function App() {
     });
   };
 
+  const addTodo = async (title, dueAt) => {
+    const trimmed = title.trim();
+    if (!trimmed) return null;
+    const payload = { title: trimmed };
+    if (dueAt) payload.dueAt = dueAt;
+    if (token) {
+      const res = await apiFetch('/api/todos', { method: 'POST', body: JSON.stringify(payload) });
+      if (!res.ok) return null;
+      const todo = await res.json();
+      const normalized = { ...todo, dueAt: todo.dueAt || dueAt || null };
+      setTodos((prev) => [...prev, normalized]);
+      return todo;
+    }
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const todo = { id, title: trimmed, completed: false, dueAt: dueAt || null };
+    setTodos((prev) => [...prev, todo]);
+    return todo;
+  };
+
+  const toggleTodo = async (id, completed) => {
+    if (!id) return null;
+    if (token) {
+      const res = await apiFetch(`/api/todos/${id}`, { method: 'PATCH', body: JSON.stringify({ completed }) });
+      if (!res.ok) return null;
+      const todo = await res.json();
+      setTodos((prev) => prev.map((t) => (t.id === id ? todo : t)));
+      return todo;
+    }
+    let updatedTodo = null;
+    setTodos((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t;
+        updatedTodo = { ...t, completed };
+        return updatedTodo;
+      })
+    );
+    return updatedTodo;
+  };
+
+  const deleteTodo = async (id) => {
+    if (!id) return;
+    if (token) {
+      const res = await apiFetch(`/api/todos/${id}`, { method: 'DELETE' });
+      if (!res.ok) return;
+    }
+    setTodos((prev) => prev.filter((t) => t.id !== id));
+  };
+
   const markAttendance = async (dateStrOrArray, subjectIds, status) => {
     if ((!dateStrOrArray && !Array.isArray(dateStrOrArray)) || subjectIds.length === 0 || !status) return;
     const dates = Array.isArray(dateStrOrArray) ? dateStrOrArray : [dateStrOrArray];
@@ -198,9 +260,10 @@ function App() {
   const loadRemote = async () => {
     if (!token) return;
     try {
-      const [sRes, aRes] = await Promise.all([
+      const [sRes, aRes, tRes] = await Promise.all([
         apiFetch('/api/subjects'),
         apiFetch('/api/attendance/all'),
+        apiFetch('/api/todos'),
       ]);
       if (sRes.ok) {
         const s = await sRes.json();
@@ -210,6 +273,10 @@ function App() {
         const a = await aRes.json();
         setAttendance(a);
       }
+      if (tRes.ok) {
+        const t = await tRes.json();
+        setTodos(t);
+      }
     } catch {
       // ignore
     }
@@ -218,11 +285,16 @@ function App() {
   const migrateLocalToServerIfNeeded = async () => {
     if (!token) return;
     try {
-      const sRes = await apiFetch('/api/subjects');
-      const aRes = await apiFetch('/api/attendance/all');
+      const [sRes, aRes, tRes] = await Promise.all([
+        apiFetch('/api/subjects'),
+        apiFetch('/api/attendance/all'),
+        apiFetch('/api/todos'),
+      ]);
       const serverSubjects = sRes.ok ? await sRes.json() : [];
       const serverAttendance = aRes.ok ? await aRes.json() : {};
-      const hasServerData = serverSubjects.length > 0 || Object.keys(serverAttendance).length > 0;
+      const serverTodos = tRes.ok ? await tRes.json() : [];
+      const hasServerData =
+        serverSubjects.length > 0 || Object.keys(serverAttendance).length > 0 || serverTodos.length > 0;
       if (hasServerData) return;
       // Read local cached data
       const localSubjects = (() => {
@@ -231,7 +303,10 @@ function App() {
       const localAttendance = (() => {
         try { return JSON.parse(localStorage.getItem('attendance') || '{}'); } catch { return {}; }
       })();
-      if (localSubjects.length === 0) return;
+      const localTodos = (() => {
+        try { return JSON.parse(localStorage.getItem('todos') || '[]'); } catch { return []; }
+      })();
+      if (localSubjects.length === 0 && localTodos.length === 0) return;
       // Create subjects on server and build id map
       const idMap = new Map();
       for (const s of localSubjects) {
@@ -257,6 +332,16 @@ function App() {
             body: JSON.stringify({ dates: [dateStr], subjectIds: subjIds, status }),
           });
         }
+      }
+      for (const todo of localTodos) {
+        await apiFetch('/api/todos', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: todo.title,
+            completed: !!todo.completed,
+            dueAt: todo.dueAt || null,
+          }),
+        });
       }
       // Reload from server
       await loadRemote();
@@ -304,11 +389,13 @@ function App() {
     // Clear client-side cached data so nothing is shown after logout
     setSubjects([]);
     setAttendance({});
+    setTodos([]);
     try {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       localStorage.removeItem('subjects');
       localStorage.removeItem('attendance');
+      localStorage.removeItem('todos');
     } catch {
       // ignore storage errors
     }
@@ -319,6 +406,7 @@ function App() {
       // data
       subjects,
       attendance,
+      todos,
       user,
       token,
       // subject actions
@@ -331,9 +419,13 @@ function App() {
       loginUser,
       signupUser,
       clearAttendance,
+      // todo actions
+      addTodo,
+      toggleTodo,
+      deleteTodo,
       logout,
     }),
-    [subjects, attendance, user, token]
+    [subjects, attendance, todos, user, token]
   );
 
   return (
@@ -345,6 +437,7 @@ function App() {
             <Route path="/" element={<Home />} />
             <Route path="/subjects" element={<Subjects />} />
             <Route path="/subjects/:id" element={<SubjectDetails />} />
+            <Route path="/todos" element={<Todos />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
           </Routes>
