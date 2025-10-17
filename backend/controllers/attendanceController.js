@@ -52,14 +52,30 @@ exports.clearOne = async (req, res) => {
 
 exports.getAll = async (req, res) => {
   try {
-    const rows = await Attendance.find({ user: req.user._id }).select('date subject status').lean();
+    const { start, end, limit, skip } = req.query;
+    const filter = { user: req.user._id };
+    if (start || end) {
+      filter.date = {};
+      if (start) filter.date.$gte = start;
+      if (end) filter.date.$lte = end;
+    }
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 180, 1), 365);
+    const parsedSkip = Math.max(parseInt(skip, 10) || 0, 0);
+
+    const rows = await Attendance.find(filter)
+      .select('date subject status')
+      .sort({ date: -1 })
+      .skip(parsedSkip)
+      .limit(parsedLimit)
+      .lean();
     const out = {};
     for (const r of rows) {
       const d = r.date;
       if (!out[d]) out[d] = {};
       out[d][r.subject.toString()] = r.status;
     }
-    return res.json(out);
+    const total = await Attendance.countDocuments(filter);
+    return res.json({ data: out, pagination: { total, limit: parsedLimit, skip: parsedSkip, returned: rows.length } });
   } catch (err) {
     console.error('getAll error', err);
     return res.status(500).json({ message: 'Internal server error' });

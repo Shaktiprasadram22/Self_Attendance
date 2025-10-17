@@ -1,4 +1,4 @@
-import React, { createContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import BottomNav from './components/BottomNav';
@@ -57,26 +57,53 @@ function App() {
     }
   });
 
+  const storageTimers = useRef(new Map());
+
+  const schedulePersist = (key, value) => {
+    const timers = storageTimers.current;
+    if (timers.has(key)) {
+      clearTimeout(timers.get(key));
+    }
+    const timerId = setTimeout(() => {
+      try {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      } catch {
+        // ignore storage errors
+      } finally {
+        timers.delete(key);
+      }
+    }, 200);
+    timers.set(key, timerId);
+  };
+
   useEffect(() => {
-    localStorage.setItem('subjects', JSON.stringify(subjects));
+    return () => {
+      storageTimers.current.forEach((timerId) => clearTimeout(timerId));
+      storageTimers.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    schedulePersist('subjects', JSON.stringify(subjects));
   }, [subjects]);
 
   useEffect(() => {
-    localStorage.setItem('attendance', JSON.stringify(attendance));
+    schedulePersist('attendance', JSON.stringify(attendance));
   }, [attendance]);
 
   useEffect(() => {
-    localStorage.setItem('todos', JSON.stringify(todos));
+    schedulePersist('todos', JSON.stringify(todos));
   }, [todos]);
 
   useEffect(() => {
-    if (user) localStorage.setItem('user', JSON.stringify(user));
-    else localStorage.removeItem('user');
+    if (user) schedulePersist('user', JSON.stringify(user));
+    else schedulePersist('user', null);
   }, [user]);
 
   useEffect(() => {
-    if (token) localStorage.setItem('token', token);
-    else localStorage.removeItem('token');
+    if (token) schedulePersist('token', token);
+    else schedulePersist('token', null);
   }, [token]);
 
   // If we have a token but no user, fetch profile
@@ -262,7 +289,7 @@ function App() {
     try {
       const [sRes, aRes, tRes] = await Promise.all([
         apiFetch('/api/subjects'),
-        apiFetch('/api/attendance/all'),
+        apiFetch('/api/attendance/all?limit=180&skip=0'),
         apiFetch('/api/todos'),
       ]);
       if (sRes.ok) {
@@ -271,7 +298,7 @@ function App() {
       }
       if (aRes.ok) {
         const a = await aRes.json();
-        setAttendance(a);
+        setAttendance(a.data || {});
       }
       if (tRes.ok) {
         const t = await tRes.json();
@@ -287,14 +314,14 @@ function App() {
     try {
       const [sRes, aRes, tRes] = await Promise.all([
         apiFetch('/api/subjects'),
-        apiFetch('/api/attendance/all'),
+        apiFetch('/api/attendance/all?limit=180&skip=0'),
         apiFetch('/api/todos'),
       ]);
       const serverSubjects = sRes.ok ? await sRes.json() : [];
-      const serverAttendance = aRes.ok ? await aRes.json() : {};
+      const serverAttendance = aRes.ok ? await aRes.json() : { data: {} };
       const serverTodos = tRes.ok ? await tRes.json() : [];
       const hasServerData =
-        serverSubjects.length > 0 || Object.keys(serverAttendance).length > 0 || serverTodos.length > 0;
+        serverSubjects.length > 0 || Object.keys(serverAttendance.data || {}).length > 0 || serverTodos.length > 0;
       if (hasServerData) return;
       // Read local cached data
       const localSubjects = (() => {
@@ -308,15 +335,33 @@ function App() {
       })();
       if (localSubjects.length === 0 && localTodos.length === 0) return;
       // Create subjects on server and build id map
+      const chunk = (arr, size) => {
+        const parts = [];
+        for (let i = 0; i < arr.length; i += size) parts.push(arr.slice(i, i + size));
+        return parts;
+      };
+
       const idMap = new Map();
-      for (const s of localSubjects) {
-        const res = await apiFetch('/api/subjects', { method: 'POST', body: JSON.stringify({ name: s.name }) });
-        if (res.ok) {
-          const created = await res.json();
-          idMap.set(s.id, created.id);
-        }
+      const subjectChunks = chunk(localSubjects, 5);
+      for (const group of subjectChunks) {
+        const created = await Promise.all(
+          group.map(async (s) => {
+            try {
+              const res = await apiFetch('/api/subjects', { method: 'POST', body: JSON.stringify({ name: s.name }) });
+              if (!res.ok) return null;
+              const payload = await res.json();
+              return { oldId: s.id, newId: payload.id };
+            } catch {
+              return null;
+            }
+          })
+        );
+        created.forEach((entry) => {
+          if (entry?.newId) idMap.set(entry.oldId, entry.newId);
+        });
       }
-      // Push attendance grouped by status per date
+
+      const attendancePayloads = [];
       for (const [dateStr, perSubj] of Object.entries(localAttendance)) {
         const groups = {};
         for (const [oldId, status] of Object.entries(perSubj)) {
@@ -327,21 +372,44 @@ function App() {
         }
         for (const [status, subjIds] of Object.entries(groups)) {
           if (subjIds.length === 0) continue;
-          await apiFetch('/api/attendance/mark', {
-            method: 'POST',
-            body: JSON.stringify({ dates: [dateStr], subjectIds: subjIds, status }),
-          });
+          attendancePayloads.push({ dateStr, status, subjectIds: subjIds });
         }
       }
-      for (const todo of localTodos) {
-        await apiFetch('/api/todos', {
-          method: 'POST',
-          body: JSON.stringify({
-            title: todo.title,
-            completed: !!todo.completed,
-            dueAt: todo.dueAt || null,
-          }),
-        });
+
+      const attendanceChunks = chunk(attendancePayloads, 5);
+      for (const group of attendanceChunks) {
+        await Promise.all(
+          group.map(async ({ dateStr, status, subjectIds }) => {
+            try {
+              await apiFetch('/api/attendance/mark', {
+                method: 'POST',
+                body: JSON.stringify({ dates: [dateStr], subjectIds, status }),
+              });
+            } catch {
+              // ignore
+            }
+          })
+        );
+      }
+
+      const todoChunks = chunk(localTodos, 5);
+      for (const group of todoChunks) {
+        await Promise.all(
+          group.map(async (todo) => {
+            try {
+              await apiFetch('/api/todos', {
+                method: 'POST',
+                body: JSON.stringify({
+                  title: todo.title,
+                  completed: !!todo.completed,
+                  dueAt: todo.dueAt || null,
+                }),
+              });
+            } catch {
+              // ignore
+            }
+          })
+        );
       }
       // Reload from server
       await loadRemote();
