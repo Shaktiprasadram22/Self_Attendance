@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/userModel');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const { JWT_SECRET } = require('../lib/authConfig');
 const TOKEN_TTL = '7d';
 
 function signToken(user) {

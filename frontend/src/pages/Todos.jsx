@@ -31,7 +31,7 @@ function describeRemaining(dueAtIso, nowMs) {
 }
 
 export default function Todos() {
-  const { todos, addTodo, toggleTodo, deleteTodo } = useContext(AppDataContext);
+  const { todos, addTodo, toggleTodo, deleteTodo, canEdit } = useContext(AppDataContext);
   const [title, setTitle] = useState('');
   const [dueAtInput, setDueAtInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -121,24 +121,26 @@ export default function Todos() {
           <div className="flex items-center gap-3">
             <input
               type="text"
+              aria-label="Todo title"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               placeholder="Add a todo"
-              className="flex-1 rounded-full border border-slate-200 px-4 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-              disabled={submitting}
+              className="min-w-0 flex-1 rounded-full border border-slate-200 px-4 py-2 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              disabled={submitting || !canEdit}
             />
             <button
               type="submit"
               className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand/90 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={submitting}
+              disabled={submitting || !canEdit}
             >
               Add
             </button>
           </div>
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ending time</label>
+            <label htmlFor="todo-due" className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ending time</label>
             <input
               type="datetime-local"
+              id="todo-due"
               value={dueAtInput}
               onChange={handleDueChange}
               ref={dueInputRef}
@@ -148,7 +150,7 @@ export default function Todos() {
                 WebkitAppearance: 'none',
                 MozAppearance: 'none',
               }}
-              disabled={submitting}
+              disabled={submitting || !canEdit}
             />
           </div>
           {error && <p className="text-sm text-rose-600">{error}</p>}
@@ -178,6 +180,7 @@ export default function Todos() {
                     <input
                       type="checkbox"
                       checked={!!todo.completed}
+                      disabled={!canEdit}
                       onChange={(event) => handleToggle(todo.id, event.target.checked)}
                       className="peer sr-only"
                     />
@@ -226,6 +229,7 @@ export default function Todos() {
                   type="button"
                   className="rounded-full bg-red-500 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
                   onClick={() => handleDelete(todo.id)}
+                  disabled={!canEdit}
                 >
                   Delete
                 </button>

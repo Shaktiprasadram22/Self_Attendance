@@ -1,10 +1,6 @@
 const mongoose = require('mongoose');
 const { Attendance, Subject } = require('../models/attendanceModel');
 
-exports.healthCheck = (req, res) => {
-  res.json({ ok: true, message: 'Attendance route healthy' });
-};
-
 exports.markAttendance = async (req, res) => {
   try {
     const { date, dates, subjectIds, status } = req.body || {};
@@ -64,7 +60,7 @@ exports.getAll = async (req, res) => {
 
     const rows = await Attendance.find(filter)
       .select('date subject status')
-      .sort({ date: -1 })
+      .sort({ date: -1, _id: -1 })
       .skip(parsedSkip)
       .limit(parsedLimit)
       .lean();

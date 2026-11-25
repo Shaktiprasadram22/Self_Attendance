@@ -3,3 +3,15 @@ frontend/node_modules/
 backend/node_modules/
 *.env
 frontend/.env.local
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+.vercel/
+.playwright-cli/
+frontend/build/
+coverage/
+output/
+*.log

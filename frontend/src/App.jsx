@@ -1,5 +1,5 @@
-import React, { createContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import React, { createContext, useEffect, useRef, useState } from 'react';
+import { Link, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import BottomNav from './components/BottomNav';
 import Home from './pages/Home';
@@ -8,499 +8,319 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import SubjectDetails from './pages/SubjectDetails';
 import Todos from './pages/Todos';
-import { apiFetch } from './lib/api';
+import { accountJson, loadAccountData, migrateGuestData } from './lib/accountData';
 
 export const AppDataContext = createContext(null);
+const BACKUP_KEY = 'self-attendance-local-backup';
+function storedJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
 
 function App() {
-  const [subjects, setSubjects] = useState(() => {
-    try {
-      const saved = localStorage.getItem('subjects');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const [attendance, setAttendance] = useState(() => {
-    try {
-      const saved = localStorage.getItem('attendance');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
-
-  const [todos, setTodos] = useState(() => {
-    try {
-      const saved = localStorage.getItem('todos');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  // Auth: token + user persisted in localStorage; hydrate on load
-  const [user, setUser] = useState(() => {
-    try {
-      const saved = localStorage.getItem('user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [subjects, setSubjects] = useState(() => storedJson('subjects', []));
+  const [attendance, setAttendance] = useState(() => storedJson('attendance', {}));
+  const [todos, setTodos] = useState(() => storedJson('todos', []));
+  const [user, setUser] = useState(() => storedJson('user', null));
   const [token, setToken] = useState(() => {
-    try {
-      return localStorage.getItem('token') || '';
-    } catch {
-      return '';
-    }
+    try { return localStorage.getItem('token') || ''; } catch { return ''; }
   });
-
+  const [localBackup, setLocalBackup] = useState(() => storedJson(BACKUP_KEY, null));
+  const [loadingRemote, setLoadingRemote] = useState(false);
+  const [syncError, setSyncError] = useState('');
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [loadedToken, setLoadedToken] = useState('');
+  const authRef = useRef(token);
+  const authAttempt = useRef(0);
+  const loadAttempt = useRef(0);
+  const switchingAccount = useRef(false);
   const storageTimers = useRef(new Map());
+  const canEdit = !token || (loadedToken === token && !loadingRemote && !sessionExpired);
 
   const schedulePersist = (key, value) => {
     const timers = storageTimers.current;
-    if (timers.has(key)) {
-      clearTimeout(timers.get(key));
-    }
-    const timerId = setTimeout(() => {
-      try {
-        if (value === null) localStorage.removeItem(key);
-        else localStorage.setItem(key, value);
-      } catch {
-        // ignore storage errors
-      } finally {
-        timers.delete(key);
-      }
-    }, 200);
-    timers.set(key, timerId);
+    if (timers.has(key)) clearTimeout(timers.get(key));
+    timers.set(key, setTimeout(() => {
+      try { localStorage.setItem(key, value); } catch { /* In-memory use still works. */ }
+      timers.delete(key);
+    }, 200));
   };
-
-  useEffect(() => {
-    return () => {
-      storageTimers.current.forEach((timerId) => clearTimeout(timerId));
-      storageTimers.current.clear();
-    };
+  useEffect(() => () => {
+    loadAttempt.current++;
+    authAttempt.current++;
+    storageTimers.current.forEach(clearTimeout);
+    storageTimers.current.clear();
   }, []);
+  useEffect(() => { schedulePersist('subjects', JSON.stringify(subjects)); }, [subjects]);
+  useEffect(() => { schedulePersist('attendance', JSON.stringify(attendance)); }, [attendance]);
+  useEffect(() => { schedulePersist('todos', JSON.stringify(todos)); }, [todos]);
 
-  useEffect(() => {
-    schedulePersist('subjects', JSON.stringify(subjects));
-  }, [subjects]);
+  // Credentials must be available before the first account-data request.
+  // Keep them separate from the delayed persistence of larger cached records.
+  const rememberAuth = (nextUser, nextToken) => {
+    authRef.current = nextToken;
+    try {
+      if (nextToken) localStorage.setItem('token', nextToken);
+      else localStorage.removeItem('token');
+      if (nextUser) localStorage.setItem('user', JSON.stringify(nextUser));
+      else localStorage.removeItem('user');
+    } catch { /* Requests also receive the in-memory token explicitly. */ }
+    setToken(nextToken);
+    setUser(nextUser);
+  };
+  const rememberBackup = backup => {
+    try {
+      if (backup) localStorage.setItem(BACKUP_KEY, JSON.stringify(backup));
+      else localStorage.removeItem(BACKUP_KEY);
+    } catch {
+      if (backup) throw new Error('Couldn’t keep a backup on this device. Free some browser storage and try again.');
+    }
+    setLocalBackup(backup);
+  };
+  const showError = error => {
+    setSyncError(error.message || 'Couldn’t load your saved attendance. Please try again.');
+    if (error.status === 401) setSessionExpired(true);
+  };
 
-  useEffect(() => {
-    schedulePersist('attendance', JSON.stringify(attendance));
-  }, [attendance]);
-
-  useEffect(() => {
-    schedulePersist('todos', JSON.stringify(todos));
-  }, [todos]);
-
-  useEffect(() => {
-    if (user) schedulePersist('user', JSON.stringify(user));
-    else schedulePersist('user', null);
-  }, [user]);
-
-  useEffect(() => {
-    if (token) schedulePersist('token', token);
-    else schedulePersist('token', null);
-  }, [token]);
-
-  // If we have a token but no user, fetch profile
-  useEffect(() => {
-    let cancelled = false;
-    const loadMe = async () => {
-      if (!token || user) return;
-      try {
-        const res = await apiFetch('/api/auth/me');
-        if (!cancelled) {
-          if (res.ok) {
-            const data = await res.json();
-            setUser({ id: data.id, name: data.name, email: data.email });
-          } else {
-            setToken('');
-          }
-        }
-      } catch {
-        // ignore
+  const loadRemote = async (accessToken = authRef.current, accountId = user?.id, backup = localBackup, allowImport = false) => {
+    if (!accessToken) return false;
+    const attempt = ++loadAttempt.current;
+    const current = () => attempt === loadAttempt.current && authRef.current === accessToken;
+    setLoadingRemote(true);
+    setSyncError('');
+    try {
+      if (!accountId) {
+        const profile = await accountJson('/api/auth/me', accessToken);
+        if (!current()) return false;
+        if (!profile?.id) throw new Error('Couldn’t load your account. Please try again.');
+        accountId = profile.id;
+        rememberAuth(profile, accessToken);
       }
-    };
-    loadMe();
-    return () => {
-      cancelled = true;
-    };
-  }, [token, user]);
-
-  const addSubject = async (name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    // If authenticated, create on server
-    if (token) {
-      const res = await apiFetch('/api/subjects', { method: 'POST', body: JSON.stringify({ name: trimmed }) });
-      if (!res.ok) {
-        // fall back silently if conflict
-        return;
+      let data = await loadAccountData(accessToken);
+      if (!current()) return false;
+      const empty = !data.subjects.length && !Object.keys(data.attendance).length && !data.todos.length;
+      if (backup?.userId === accountId && (backup.pending || ((allowImport || backup.awaitingAccount) && empty))) {
+        backup = { ...backup, pending: true };
+        rememberBackup(backup);
+        data = await migrateGuestData(backup, data, accessToken, current);
+        if (!current()) return false;
+        rememberBackup(null);
+      } else if (backup?.userId === accountId && backup.awaitingAccount) {
+        rememberBackup({ ...backup, awaitingAccount: false });
       }
-      const s = await res.json();
-      setSubjects((prev) => [...prev, s]);
-    } else {
-      const exists = subjects.some((s) => s.name.toLowerCase() === trimmed.toLowerCase());
-      if (exists) return;
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setSubjects((prev) => [...prev, { id, name: trimmed }]);
+      setSubjects(data.subjects);
+      setAttendance(data.attendance);
+      setTodos(data.todos);
+      setLoadedToken(accessToken);
+      setSessionExpired(false);
+      return true;
+    } catch (error) {
+      if (current()) showError(error);
+      return false;
+    } finally {
+      if (current()) setLoadingRemote(false);
     }
   };
 
-  // When token+user are set, fetch remote subjects/attendance
   useEffect(() => {
-    if (token && user) {
-      loadRemote();
-    }
+    if (token && !loadingRemote && !switchingAccount.current && loadedToken !== token) void loadRemote(token, user?.id);
+    // Data changes must not restart the initial account load.
   }, [token, user]);
 
+  const mutation = async (path, options) => {
+    if (!canEdit) {
+      if (!syncError) setSyncError('Load your saved attendance before making changes.');
+      return null;
+    }
+    const accessToken = authRef.current;
+    try {
+      const data = await accountJson(path, accessToken, options);
+      return authRef.current === accessToken ? data : null;
+    } catch (error) {
+      if (authRef.current === accessToken) showError(error);
+      return null;
+    }
+  };
+
+  const addSubject = async name => {
+    const trimmed = name.trim();
+    if (!trimmed || !canEdit) return false;
+    if (token) {
+      const subject = await mutation('/api/subjects', { method: 'POST', body: JSON.stringify({ name: trimmed }) });
+      if (!subject) return false;
+      setSubjects(prev => [...prev, subject]);
+    } else {
+      if (subjects.some(subject => subject.name.toLowerCase() === trimmed.toLowerCase())) return false;
+      setSubjects(prev => [...prev, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: trimmed }]);
+    }
+    return true;
+  };
   const editSubject = async (id, name) => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed || !canEdit) return false;
     if (token) {
-      const res = await apiFetch(`/api/subjects/${id}`, { method: 'PUT', body: JSON.stringify({ name: trimmed }) });
-      if (!res.ok) return;
-      const s = await res.json();
-      setSubjects((prev) => prev.map((x) => (x.id === id ? s : x)));
-    } else {
-      setSubjects((prev) => prev.map((s) => (s.id === id ? { ...s, name: trimmed } : s)));
-    }
+      const subject = await mutation(`/api/subjects/${id}`, { method: 'PUT', body: JSON.stringify({ name: trimmed }) });
+      if (!subject) return false;
+      setSubjects(prev => prev.map(item => item.id === id ? subject : item));
+    } else setSubjects(prev => prev.map(item => item.id === id ? { ...item, name: trimmed } : item));
+    return true;
   };
-
-  const deleteSubject = async (id) => {
-    if (token) {
-      const res = await apiFetch(`/api/subjects/${id}`, { method: 'DELETE' });
-      if (!res.ok) return;
-    }
-    setSubjects((prev) => prev.filter((s) => s.id !== id));
-    setAttendance((prev) => {
+  const deleteSubject = async id => {
+    if (!canEdit) return false;
+    if (token && !await mutation(`/api/subjects/${id}`, { method: 'DELETE' })) return false;
+    setSubjects(prev => prev.filter(subject => subject.id !== id));
+    setAttendance(prev => {
       const copy = { ...prev };
-      Object.keys(copy).forEach((date) => {
-        if (copy[date] && copy[date][id]) {
-          const { [id]: _, ...rest } = copy[date];
-          copy[date] = rest;
-          if (Object.keys(copy[date]).length === 0) {
-            delete copy[date];
-          }
+      Object.keys(copy).forEach(date => {
+        if (copy[date]?.[id]) {
+          const { [id]: removed, ...rest } = copy[date];
+          if (Object.keys(rest).length) copy[date] = rest;
+          else delete copy[date];
         }
       });
       return copy;
     });
+    return true;
+  };
+
+  const markAttendance = async (dateOrDates, subjectIds, status) => {
+    if (!canEdit) return false;
+    const dates = Array.isArray(dateOrDates) ? dateOrDates : [dateOrDates];
+    if (!dates.length || dates.some(date => !date) || !subjectIds.length || !status) return false;
+    if (token && !await mutation('/api/attendance/mark', {
+      method: 'POST', body: JSON.stringify({ dates, subjectIds, status }),
+    })) return false;
+    setAttendance(prev => {
+      const copy = { ...prev };
+      dates.forEach(date => {
+        const day = { ...copy[date] };
+        subjectIds.forEach(id => { day[id] = status; });
+        copy[date] = day;
+      });
+      return copy;
+    });
+    return true;
+  };
+  const clearAttendance = async (date, subjectId) => {
+    if (!date || !subjectId || !canEdit) return false;
+    if (token && !await mutation(`/api/attendance/clear?date=${encodeURIComponent(date)}&subjectId=${encodeURIComponent(subjectId)}`, { method: 'DELETE' })) return false;
+    setAttendance(prev => {
+      if (!prev[date]) return prev;
+      const copy = { ...prev };
+      const { [subjectId]: removed, ...rest } = copy[date];
+      if (Object.keys(rest).length) copy[date] = rest;
+      else delete copy[date];
+      return copy;
+    });
+    return true;
   };
 
   const addTodo = async (title, dueAt) => {
     const trimmed = title.trim();
-    if (!trimmed) return null;
-    const payload = { title: trimmed };
-    if (dueAt) payload.dueAt = dueAt;
-    if (token) {
-      const res = await apiFetch('/api/todos', { method: 'POST', body: JSON.stringify(payload) });
-      if (!res.ok) return null;
-      const todo = await res.json();
-      const normalized = { ...todo, dueAt: todo.dueAt || dueAt || null };
-      setTodos((prev) => [...prev, normalized]);
-      return todo;
-    }
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const todo = { id, title: trimmed, completed: false, dueAt: dueAt || null };
-    setTodos((prev) => [...prev, todo]);
+    if (!trimmed || !canEdit) return null;
+    const payload = { title: trimmed, ...(dueAt ? { dueAt } : {}) };
+    const todo = token ? await mutation('/api/todos', { method: 'POST', body: JSON.stringify(payload) })
+      : { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, title: trimmed, completed: false, dueAt: dueAt || null };
+    if (!todo) return null;
+    setTodos(prev => [...prev, { ...todo, dueAt: todo.dueAt || dueAt || null }]);
     return todo;
   };
-
   const toggleTodo = async (id, completed) => {
-    if (!id) return null;
+    if (!id || !canEdit) return null;
     if (token) {
-      const res = await apiFetch(`/api/todos/${id}`, { method: 'PATCH', body: JSON.stringify({ completed }) });
-      if (!res.ok) return null;
-      const todo = await res.json();
-      setTodos((prev) => prev.map((t) => (t.id === id ? todo : t)));
+      const todo = await mutation(`/api/todos/${id}`, { method: 'PATCH', body: JSON.stringify({ completed }) });
+      if (!todo) return null;
+      setTodos(prev => prev.map(item => item.id === id ? todo : item));
       return todo;
     }
-    let updatedTodo = null;
-    setTodos((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        updatedTodo = { ...t, completed };
-        return updatedTodo;
-      })
-    );
-    return updatedTodo;
+    setTodos(prev => prev.map(item => item.id === id ? { ...item, completed } : item));
+    return { id, completed };
+  };
+  const deleteTodo = async id => {
+    if (!id || !canEdit) return false;
+    if (token && !await mutation(`/api/todos/${id}`, { method: 'DELETE' })) return false;
+    setTodos(prev => prev.filter(item => item.id !== id));
+    return true;
   };
 
-  const deleteTodo = async (id) => {
-    if (!id) return;
-    if (token) {
-      const res = await apiFetch(`/api/todos/${id}`, { method: 'DELETE' });
-      if (!res.ok) return;
+  const authenticate = async (path, credentials) => {
+    const attempt = ++authAttempt.current;
+    const data = await accountJson(path, '', { method: 'POST', body: JSON.stringify(credentials) });
+    if (attempt !== authAttempt.current) throw new Error('Sign-in was cancelled. Please try again.');
+    if (!data.token || !data.user?.id) throw new Error('Sign-in didn’t complete. Please try again.');
+    const guest = !authRef.current && !user;
+    let backup = localBackup;
+    if (guest && (subjects.length || Object.keys(attendance).length || todos.length)) {
+      backup = { userId: data.user.id, pending: false, awaitingAccount: true, subjects, attendance, todos };
+      rememberBackup(backup);
     }
-    setTodos((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  const markAttendance = async (dateStrOrArray, subjectIds, status) => {
-    if ((!dateStrOrArray && !Array.isArray(dateStrOrArray)) || subjectIds.length === 0 || !status) return;
-    const dates = Array.isArray(dateStrOrArray) ? dateStrOrArray : [dateStrOrArray];
-    if (token) {
-      await apiFetch('/api/attendance/mark', {
-        method: 'POST',
-        body: JSON.stringify({ dates, subjectIds, status }),
-      });
+    if (user && user.id !== data.user.id) {
+      setSubjects([]);
+      setAttendance({});
+      setTodos([]);
     }
-    // Update local state
-    setAttendance((prev) => {
-      const copy = { ...prev };
-      dates.forEach((dateStr) => {
-        const day = copy[dateStr] ? { ...copy[dateStr] } : {};
-        subjectIds.forEach((id) => {
-          day[id] = status;
-        });
-        copy[dateStr] = day;
-      });
-      return copy;
-    });
-  };
-
-  const clearAttendance = async (dateStr, subjectId) => {
-    if (!dateStr || !subjectId) return;
-    if (token) {
-      await apiFetch(`/api/attendance/clear?date=${encodeURIComponent(dateStr)}&subjectId=${encodeURIComponent(subjectId)}`, {
-        method: 'DELETE',
-      });
-    }
-    setAttendance((prev) => {
-      const copy = { ...prev };
-      if (!copy[dateStr]) return prev;
-      const { [subjectId]: _, ...rest } = copy[dateStr];
-      if (Object.keys(rest).length === 0) {
-        delete copy[dateStr];
-      } else {
-        copy[dateStr] = rest;
-      }
-      return copy;
-    });
-  };
-
-  // Load subjects and attendance from server
-  const loadRemote = async () => {
-    if (!token) return;
-    try {
-      const [sRes, aRes, tRes] = await Promise.all([
-        apiFetch('/api/subjects'),
-        apiFetch('/api/attendance/all?limit=180&skip=0'),
-        apiFetch('/api/todos'),
-      ]);
-      if (sRes.ok) {
-        const s = await sRes.json();
-        setSubjects(s);
-      }
-      if (aRes.ok) {
-        const a = await aRes.json();
-        setAttendance(a.data || {});
-      }
-      if (tRes.ok) {
-        const t = await tRes.json();
-        setTodos(t);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const migrateLocalToServerIfNeeded = async () => {
-    if (!token) return;
-    try {
-      const [sRes, aRes, tRes] = await Promise.all([
-        apiFetch('/api/subjects'),
-        apiFetch('/api/attendance/all?limit=180&skip=0'),
-        apiFetch('/api/todos'),
-      ]);
-      const serverSubjects = sRes.ok ? await sRes.json() : [];
-      const serverAttendance = aRes.ok ? await aRes.json() : { data: {} };
-      const serverTodos = tRes.ok ? await tRes.json() : [];
-      const hasServerData =
-        serverSubjects.length > 0 || Object.keys(serverAttendance.data || {}).length > 0 || serverTodos.length > 0;
-      if (hasServerData) return;
-      // Read local cached data
-      const localSubjects = (() => {
-        try { return JSON.parse(localStorage.getItem('subjects') || '[]'); } catch { return []; }
-      })();
-      const localAttendance = (() => {
-        try { return JSON.parse(localStorage.getItem('attendance') || '{}'); } catch { return {}; }
-      })();
-      const localTodos = (() => {
-        try { return JSON.parse(localStorage.getItem('todos') || '[]'); } catch { return []; }
-      })();
-      if (localSubjects.length === 0 && localTodos.length === 0) return;
-      // Create subjects on server and build id map
-      const chunk = (arr, size) => {
-        const parts = [];
-        for (let i = 0; i < arr.length; i += size) parts.push(arr.slice(i, i + size));
-        return parts;
-      };
-
-      const idMap = new Map();
-      const subjectChunks = chunk(localSubjects, 5);
-      for (const group of subjectChunks) {
-        const created = await Promise.all(
-          group.map(async (s) => {
-            try {
-              const res = await apiFetch('/api/subjects', { method: 'POST', body: JSON.stringify({ name: s.name }) });
-              if (!res.ok) return null;
-              const payload = await res.json();
-              return { oldId: s.id, newId: payload.id };
-            } catch {
-              return null;
-            }
-          })
-        );
-        created.forEach((entry) => {
-          if (entry?.newId) idMap.set(entry.oldId, entry.newId);
-        });
-      }
-
-      const attendancePayloads = [];
-      for (const [dateStr, perSubj] of Object.entries(localAttendance)) {
-        const groups = {};
-        for (const [oldId, status] of Object.entries(perSubj)) {
-          const newId = idMap.get(oldId);
-          if (!newId) continue;
-          if (!groups[status]) groups[status] = [];
-          groups[status].push(newId);
-        }
-        for (const [status, subjIds] of Object.entries(groups)) {
-          if (subjIds.length === 0) continue;
-          attendancePayloads.push({ dateStr, status, subjectIds: subjIds });
-        }
-      }
-
-      const attendanceChunks = chunk(attendancePayloads, 5);
-      for (const group of attendanceChunks) {
-        await Promise.all(
-          group.map(async ({ dateStr, status, subjectIds }) => {
-            try {
-              await apiFetch('/api/attendance/mark', {
-                method: 'POST',
-                body: JSON.stringify({ dates: [dateStr], subjectIds, status }),
-              });
-            } catch {
-              // ignore
-            }
-          })
-        );
-      }
-
-      const todoChunks = chunk(localTodos, 5);
-      for (const group of todoChunks) {
-        await Promise.all(
-          group.map(async (todo) => {
-            try {
-              await apiFetch('/api/todos', {
-                method: 'POST',
-                body: JSON.stringify({
-                  title: todo.title,
-                  completed: !!todo.completed,
-                  dueAt: todo.dueAt || null,
-                }),
-              });
-            } catch {
-              // ignore
-            }
-          })
-        );
-      }
-      // Reload from server
-      await loadRemote();
-    } catch {
-      // ignore
-    }
-  };
-
-  // Auth actions
-  const loginUser = async (email, password) => {
-    const res = await apiFetch('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ email, password }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Login failed');
-    }
-    const data = await res.json();
-    setToken(data.token || '');
-    setUser(data.user || null);
-    await migrateLocalToServerIfNeeded();
-    await loadRemote();
+    switchingAccount.current = true;
+    loadAttempt.current++;
+    rememberAuth(data.user, data.token);
+    setLoadedToken('');
+    setSessionExpired(false);
+    try { await loadRemote(data.token, data.user.id, backup, guest); }
+    finally { switchingAccount.current = false; }
     return data.user;
   };
-
-  const signupUser = async (name, email, password) => {
-    const res = await apiFetch('/api/auth/signup', {
-      method: 'POST',
-      body: JSON.stringify({ name, email, password }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Signup failed');
-    }
-    const data = await res.json();
-    setToken(data.token || '');
-    setUser(data.user || null);
-    return data.user;
-  };
-
+  const loginUser = (email, password) => authenticate('/api/auth/login', { email, password });
+  const signupUser = (name, email, password) => authenticate('/api/auth/signup', { name, email, password });
   const logout = () => {
-    setToken('');
-    setUser(null);
-    // Clear client-side cached data so nothing is shown after logout
+    authAttempt.current++;
+    loadAttempt.current++;
+    switchingAccount.current = false;
+    storageTimers.current.forEach(clearTimeout);
+    storageTimers.current.clear();
+    rememberAuth(null, '');
+    setLoadedToken('');
+    setLoadingRemote(false);
+    setSessionExpired(false);
+    setSyncError('');
     setSubjects([]);
     setAttendance({});
     setTodos([]);
     try {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      localStorage.removeItem('subjects');
-      localStorage.removeItem('attendance');
-      localStorage.removeItem('todos');
-    } catch {
-      // ignore storage errors
-    }
+      ['subjects', 'attendance', 'todos'].forEach(key => localStorage.removeItem(key));
+    } catch { /* The in-memory account is still cleared. */ }
+  };
+  const downloadRecords = records => {
+    const { subjects, attendance, todos } = records;
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ subjects, attendance, todos }, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'self-attendance-local-backup.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const ctxValue = useMemo(
-    () => ({
-      // data
-      subjects,
-      attendance,
-      todos,
-      user,
-      token,
-      // subject actions
-      addSubject,
-      editSubject,
-      deleteSubject,
-      // attendance actions
-      markAttendance,
-      // auth actions
-      loginUser,
-      signupUser,
-      clearAttendance,
-      // todo actions
-      addTodo,
-      toggleTodo,
-      deleteTodo,
-      logout,
-    }),
-    [subjects, attendance, todos, user, token]
-  );
-
+  const ctxValue = {
+    subjects, attendance, todos, user, token, canEdit, sessionExpired,
+    addSubject, editSubject, deleteSubject, markAttendance, clearAttendance,
+    loginUser, signupUser, addTodo, toggleTodo, deleteTodo, logout,
+  };
   return (
     <AppDataContext.Provider value={ctxValue}>
       <div className="min-h-screen bg-slate-50 text-slate-900">
         <Navbar />
-        <main className="mx-auto max-w-md w-full px-3 pb-28 pt-16">
+        <main className="mx-auto max-w-md w-full px-3 pb-28 pt-20">
+          {loadingRemote && <p className="mb-4 text-sm text-slate-600" role="status">Loading your saved subjects and attendance…</p>}
+          {syncError && <section className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+            <p>{syncError}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {sessionExpired ? <Link className="inline-flex min-h-11 items-center rounded-lg border border-amber-800 px-3 font-semibold" to="/login">Sign in again</Link>
+                : <button className="min-h-11 rounded-lg border border-amber-800 px-3 font-semibold disabled:opacity-50" onClick={() => void loadRemote()} disabled={loadingRemote}>Retry</button>}
+              {(subjects.length > 0 || Object.keys(attendance).length > 0 || todos.length > 0) && !(localBackup && user && localBackup.userId === user.id) &&
+                <button className="min-h-11 px-2 font-semibold underline" onClick={() => downloadRecords({ subjects, attendance, todos })}>Download saved copy</button>}
+            </div>
+          </section>}
+          {localBackup?.userId === user?.id && user && <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">
+            <p>A backup of your previous local records is available.</p>
+            <button className="min-h-11 font-semibold text-sky-800 underline" onClick={() => downloadRecords(localBackup)}>Download local backup</button>
+          </div>}
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/subjects" element={<Subjects />} />

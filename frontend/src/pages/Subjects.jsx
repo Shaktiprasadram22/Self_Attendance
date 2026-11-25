@@ -3,7 +3,7 @@ import { AppDataContext } from '../App';
 import SubjectCard from '../components/SubjectCard';
 
 export default function Subjects() {
-  const { subjects, addSubject, editSubject, deleteSubject } = useContext(AppDataContext);
+  const { subjects, addSubject, editSubject, deleteSubject, canEdit } = useContext(AppDataContext);
   const [name, setName] = useState('');
   const isDuplicate = useMemo(() => {
     const trimmed = name.trim().toLowerCase();
@@ -11,30 +11,30 @@ export default function Subjects() {
     return subjects.some((s) => s.name.toLowerCase() === trimmed);
   }, [name, subjects]);
 
-  const add = (e) => {
+  const add = async (e) => {
     e.preventDefault();
     const trimmed = name.trim();
     if (!trimmed) return;
     if (isDuplicate) return;
-    addSubject(trimmed);
-    setName('');
+    if (await addSubject(trimmed)) setName('');
   };
 
   return (
     <div className="space-y-4">
       <form onSubmit={add} className="rounded-2xl border border-slate-200 bg-white p-4">
-        <label className="mb-2 block text-sm font-medium text-slate-700">Add subject</label>
+        <label htmlFor="new-subject" className="mb-2 block text-sm font-medium text-slate-700">Add subject</label>
         <div className="flex items-center gap-2">
           <input
+            id="new-subject"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Math"
-            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
           />
           <button
             type="submit"
             className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            disabled={!name.trim() || isDuplicate}
+            disabled={!canEdit || !name.trim() || isDuplicate}
           >
             Add
           </button>
@@ -54,6 +54,7 @@ export default function Subjects() {
               subject={s}
               onEdit={editSubject}
               onDelete={deleteSubject}
+              disabled={!canEdit}
             />
           ))
         )}

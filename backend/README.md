@@ -1,46 +1,48 @@
-# Self Attendance App — MVP Version
+# Self Attendance API
 
-The Self Attendance App is a mobile-first tool that lets users manually track their attendance. You can add subjects, mark your daily status (Present, Absent, Holiday, Sick Leave, Half Day), and instantly view subject-wise and overall attendance percentages.
+Express and MongoDB store separate student accounts, subjects, attendance, and todos in the `self-attendance` database. Guest records and a cache of signed-in records are stored in the frontend browser.
 
-## Frontend (React + Tailwind)
-- Optimized for phone and iPad only.
-- Uses local storage for attendance data.
-- Components: SubjectCard, AttendanceForm, StatsDashboard, Navbar.
+## Local setup
 
-## Backend (Node.js + Express + MongoDB)
-- Structured for future features.
-- Connects to MongoDB using the provided URI.
-- Includes routes, controllers, and models placeholders.
+Use Node.js 22 or later. From `backend`, run `npm ci`, copy `.env.example` to `.env`, and configure:
 
-## Core Features
-1. Add/Edit/Delete subjects  
-2. Mark daily attendance  
-3. Bulk select subjects  
-4. View subject-wise & total percentage  
-5. Responsive design (Mobile-first)  
-
----
-
-## Getting Started (Backend)
-
-- Prerequisites: Node.js 18+
-- Create `.env` (already included):
-
-```
-MONGO_URI=<your mongo connection string>
+```dotenv
+MONGO_URI=<your MongoDB connection string>
+JWT_SECRET=<a randomly generated secret of at least 32 characters>
 PORT=5000
 ```
 
-- Install deps:
+Generate a session-signing secret locally:
 
-```bash
-npm install
+```sh
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-- Start dev server:
+Run `npm run dev` for development or `npm start` for production. The frontend uses `REACT_APP_API_BASE_URL` for the backend URL, with the local development proxy as its fallback.
 
-```bash
-npm run dev
+Real `.env` files are ignored by Git. Configure `MONGO_URI` and `JWT_SECRET` directly in the backend hosting environment before deploying. Never put them in frontend variables. Changing `JWT_SECRET` requires existing users to sign in again.
+
+## Availability and history
+
+The backend retries initial database connection failures every 15 seconds. `/api/attendance/health` returns 200 only when MongoDB answers a ping. Unavailable databases return 503; API requests are rejected before authentication or writes are attempted.
+
+The frontend loads all attendance pages, authenticates the initial load with the newly issued token, and keeps cached data when a request fails. Failed saves do not mark local records as saved. Expired sessions display a sign-in link. Guest imports retain a local backup until migration succeeds and can resume after a partial failure.
+
+## Browser recovery
+
+Open `/recover.html` on the **existing frontend domain**, using the same device and browser that previously displayed the attendance. This page can download the saved copy without signing in or contacting the API. It exports the cached subjects, attendance, todos, and any earlier local backup; it excludes login tokens and account credentials and does not change local storage.
+
+The copy may be incomplete. Records that were never cached on that device require the original database or a verified backup. Keep the existing frontend domain during recovery so that its browser storage remains accessible. Creating an empty database does not recover missing records.
+
+## Verification
+
+```sh
+# From backend
+npm test
+
+# From frontend
+CI=true npm test -- --runInBand
+npm run build
 ```
 
-Note: For the MVP, the frontend stores data locally in the browser. The backend is scaffolded for future features and currently exposes placeholder endpoints under `/api/attendance`.
+Regression checks cover initial connection retries, readiness, unavailable versus expired sessions, immediate sign-in loading, full pagination, retained caches, failed writes, logout races, and resumable guest imports.

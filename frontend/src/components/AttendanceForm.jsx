@@ -16,8 +16,7 @@ function daysInMonth(y, mIndex) {
 }
 
 export default function AttendanceForm() {
-  const { subjects, attendance, markAttendance } = useContext(AppDataContext);
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const { subjects, attendance, markAttendance, canEdit } = useContext(AppDataContext);
   const now = useMemo(() => new Date(), []);
   const [dates, setDates] = useState(() => new Set());
   const [viewYear, setViewYear] = useState(now.getFullYear());
@@ -25,6 +24,19 @@ export default function AttendanceForm() {
   const [selected, setSelected] = useState(() => new Set());
   const [status, setStatus] = useState('Present');
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const save = async (selectedDates, subjectIds, nextStatus) => {
+    if (saving) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      if (await markAttendance(selectedDates, subjectIds, nextStatus)) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 1500);
+      }
+    } finally { setSaving(false); }
+  };
 
   const allSelected = subjects.length > 0 && selected.size === subjects.length;
 
@@ -74,28 +86,27 @@ export default function AttendanceForm() {
     const datesToSave = Array.from(dates);
     if (ids.length === 0 || datesToSave.length === 0) return;
     // Mark all selected dates in one call
-    await Promise.resolve(markAttendance(datesToSave.sort(), ids, status));
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+    await save(datesToSave.sort(), ids, status);
   };
 
   return (
     <section className="mb-6">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Mark attendance</h2>
         <button
           type="button"
           onClick={() => {
             if (subjects.length === 0) return;
-            const todayYmd = new Date().toISOString().slice(0, 10);
-            markAttendance(
+            const current = new Date();
+            const todayYmd = ymdFromParts(current.getFullYear(), current.getMonth(), current.getDate());
+            void save(
               todayYmd,
               subjects.map((s) => s.id),
               'Present'
             );
           }}
-          className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white disabled:opacity-50"
-          disabled={subjects.length === 0}
+          className="min-h-11 text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white disabled:opacity-50"
+          disabled={saving || !canEdit || subjects.length === 0}
         >
           Mark all Present Today
         </button>
@@ -142,8 +153,8 @@ export default function AttendanceForm() {
           </div>
 
           <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-500">
-            {['S','M','T','W','T','F','S'].map((d) => (
-              <div key={d} className="py-1">{d}</div>
+            {['S','M','T','W','T','F','S'].map((d, index) => (
+              <div key={index} className="py-1">{d}</div>
             ))}
           </div>
 
@@ -173,6 +184,8 @@ export default function AttendanceForm() {
                   <button
                     key={ymd}
                     type="button"
+                    aria-label={ymd}
+                    aria-pressed={isSelected}
                     onClick={() => {
                       setDates((prev) => {
                         const n = new Set(prev);
@@ -216,8 +229,9 @@ export default function AttendanceForm() {
 
         {/* Status */}
         <div className="flex items-center justify-between gap-3">
-          <label className="text-sm text-slate-600">Status</label>
+          <label htmlFor="attendance-status" className="text-sm text-slate-600">Status</label>
           <select
+            id="attendance-status"
             value={status}
             onChange={(e) => setStatus(e.target.value)}
             className="px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white"
@@ -264,10 +278,10 @@ export default function AttendanceForm() {
 
         <button
           type="submit"
-          disabled={subjects.length === 0 || selected.size === 0 || dates.size === 0}
+          disabled={saving || !canEdit || subjects.length === 0 || selected.size === 0 || dates.size === 0}
           className="w-full rounded-xl bg-brand px-4 py-2 font-semibold text-white disabled:opacity-50"
         >
-          Save
+          {saving ? 'Saving…' : 'Save'}
         </button>
         {saved && <p className="text-center text-sm text-emerald-600">Saved!</p>}
       </form>

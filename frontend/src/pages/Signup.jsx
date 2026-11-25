@@ -42,8 +42,9 @@ export default function Signup() {
         <h1 className="mb-4 text-xl font-semibold">Create account</h1>
         <form onSubmit={onSubmit} className="space-y-3">
           <div>
-            <label className="mb-1 block text-sm text-slate-600">Name</label>
+            <label htmlFor="signup-name" className="mb-1 block text-sm text-slate-600">Name</label>
             <input
+              id="signup-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -52,8 +53,9 @@ export default function Signup() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-slate-600">Email</label>
+            <label htmlFor="signup-email" className="mb-1 block text-sm text-slate-600">Email</label>
             <input
+              id="signup-email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -63,8 +65,9 @@ export default function Signup() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-slate-600">Password</label>
+            <label htmlFor="signup-password" className="mb-1 block text-sm text-slate-600">Password</label>
             <input
+              id="signup-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -73,7 +76,7 @@ export default function Signup() {
               autoComplete="new-password"
             />
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
           <button
             type="submit"
             disabled={loading}

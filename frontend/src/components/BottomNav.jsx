@@ -18,11 +18,12 @@ function Item({ to, label }) {
 
 export default function BottomNav() {
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-10 border-t border-slate-200 bg-white">
+    <nav className="fixed inset-x-0 bottom-0 z-10 border-t border-slate-200 bg-white" aria-label="Bottom navigation">
       <div className="mx-auto max-w-md w-full">
-        <div className="grid grid-cols-2">
+        <div className="grid grid-cols-3">
           <Item to="/" label="Home" />
           <Item to="/subjects" label="Subjects" />
+          <Item to="/todos" label="Todos" />
         </div>
       </div>
     </nav>

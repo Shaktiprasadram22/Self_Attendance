@@ -36,8 +36,9 @@ export default function Login() {
         <h1 className="mb-4 text-xl font-semibold">Login</h1>
         <form onSubmit={onSubmit} className="space-y-3">
           <div>
-            <label className="mb-1 block text-sm text-slate-600">Email</label>
+            <label htmlFor="login-email" className="mb-1 block text-sm text-slate-600">Email</label>
             <input
+              id="login-email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -47,8 +48,9 @@ export default function Login() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-slate-600">Password</label>
+            <label htmlFor="login-password" className="mb-1 block text-sm text-slate-600">Password</label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -57,7 +59,7 @@ export default function Login() {
               autoComplete="current-password"
             />
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
           <button
             type="submit"
             disabled={loading}
